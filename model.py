@@ -5,23 +5,23 @@ from torchvision import models
 
 
 class TransitionBlock(nn.Module):
-    def __init__(self, in_channels=2048, out_channels=32):
+    def __init__(self, in_channels=2048, out_channels=2048):
         super(TransitionBlock,self).__init__()
-        self.bn1 = nn.BatchNorm2d(in_channels)
-        self.relu = nn.ReLU(inplace=True)
         self.conv1 = nn.Conv2d(in_channels,
                                out_channels,
                                kernel_size=1,
                                stride=1,
                                padding=0,
                                bias=False)
-        self.avg_pool = nn.AvgPool2d(2)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        #self.avg_pool = nn.AvgPool2d(2)
         
     def forward(self,x):
-        out = self.bn1(x)
+        out = self.conv1(x)
+        out = self.bn1(out)
         out = self.relu(out)
-        out = self.conv1(out)
-        out = self.avg_pool(out)
+        #out = self.avg_pool(out)
         return out
     
 class LogSumExpPool(nn.Module):
@@ -50,15 +50,17 @@ class CX_14(nn.Module):
     def __init__(self):
         super(CX_14, self).__init__()
         r50 = models.resnet50(pretrained=True)
+        for param in r50.parameters():
+            param.requires_grad = False
         self.layer0 = nn.Sequential(r50.conv1, r50.bn1, r50.relu, r50.maxpool)
         self.layer1 = r50.layer1
         self.layer2 = r50.layer2
         self.layer3 = r50.layer3
         self.layer4 = r50.layer4
+
         self.transition_layer = TransitionBlock()
-        self.lsepool = LogSumExpPool(gamma=5)
-        
-        self.fcl = nn.Linear(32, 8)
+        self.lsepool = LogSumExpPool(gamma=10)
+        self.fcl = nn.Linear(2048, 8)
         
     def forward(self, x):
         out = self.layer0(x)
