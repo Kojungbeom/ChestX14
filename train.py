@@ -14,12 +14,12 @@ import os
 
 
     
-net = CX_14()
+net = ResModel()
 net.cuda()
-num_epochs = 100
-gamma = 5
-learning_rate = 1e-6
-optimizer = optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9, weight_decay=0)
+num_epochs = 200
+gamma = 10
+learning_rate = 1e-5
+optimizer = optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9, weight_decay=5e-4)
 loss_function = nn.BCEWithLogitsLoss()
 
 best_auc_ave = 0.0
@@ -42,6 +42,8 @@ for epoch in range(num_epochs):
     train_auc = 0.0
     output_list = []
     label_list = []
+    loss_list = []
+    loss_all = 0.0
     net.train()
     # Iterate over data.
     
@@ -70,6 +72,9 @@ for epoch in range(num_epochs):
 
         labels = labels.type_as(outputs)
         loss = loss_function(outputs, labels)
+        #print(loss.item())
+        loss_all += loss.item()
+        #print(loss_all)
         loss.backward()
         optimizer.step()
         iter_num += 1
@@ -86,17 +91,20 @@ for epoch in range(num_epochs):
                 epoch=epoch,
                 trained_samples=idx * batch_size + len(images),
                 total_samples=len(train_loader.dataset)))
-            writer.add_scalar('loss', loss.item()/outputs.shape[0], iter_num)
+            
+    writer.add_scalar('train_loss', loss_all/len(train_loader.dataset)*16, epoch)
     try:
         epoch_auc_ave = roc_auc_score(np.array(label_list), np.array(output_list))
         epoch_auc = roc_auc_score(np.array(label_list), np.array(output_list), average=None)
     except:
         epoch_auc_ave = 0
         epoch_auc = [0 for _ in range(len(class_names))]
-                  
+        
+    writer.add_scalar('train_auc', epoch_auc_ave, epoch)
     log_str = ''
     for i, c in enumerate(class_names):
         log_str += '{}: {:.4f}  \n'.format(c, epoch_auc[i])
+        writer.add_scalar(c + "_train", epoch_auc[i], epoch)
     log_str += '\n'
     print(log_str)
                  
@@ -135,21 +143,29 @@ for epoch in range(num_epochs):
     log_str = ''
     for i, c in enumerate(class_names):
         log_str += '{}: {:.4f}  \n'.format(c, epoch_auc[i])
+        writer.add_scalar(c + "_val", epoch_auc[i], epoch)
     log_str += '\n'
     print(log_str)
-    writer.add_text('log', log_str, iter_num)
+    writer.add_text('log', log_str, epoch)
             
     print("epoch {}, Val loss: {:.4f}, Val AUC {:.4f}".format(epoch,
                                                          val_loss.item() / len(val_loader.dataset),
                                                          val_auc / len(val_loader.dataset)))
-    writer.add_scalar('loss', val_loss / len(val_loader.dataset), iter_num)
-    writer.add_scalar('auc', epoch_auc_ave, iter_num)
+    writer.add_scalar('val_loss', val_loss / len(val_loader.dataset), epoch)
+    writer.add_scalar('val_auc', epoch_auc_ave, epoch)
     
     if epoch_auc_ave > best_auc_ave:
         best_auc = epoch_auc
         best_auc_ave = epoch_auc_ave
         best_model_wts = net.state_dict()
-        model_dir = os.path.join(model_save_dir, model_name+'.pth')
+        model_dir = os.path.join(model_save_dir, str(epoch) + model_name + 'best' +'.pth')
+        if not os.path.exists(model_save_dir):
+            os.makedirs(model_save_dir)
+        torch.save(net.state_dict(), model_dir)
+        print('Model saved to %s'%(model_dir))
+        
+    if epoch % 9 == 0:
+        model_dir = os.path.join(model_save_dir, str(epoch) + model_name + 'regular' +'.pth')
         if not os.path.exists(model_save_dir):
             os.makedirs(model_save_dir)
         torch.save(net.state_dict(), model_dir)
