@@ -99,8 +99,16 @@ if __name__ == '__main__':
     TIME_NOW = datetime.now().strftime(DATE_FORMAT)
     LOG_DIR = 'runs'
     WEIGHT_DIR = 'checkpoint'
-    writer = SummaryWriter(log_dir=os.path.join(
-        LOG_DIR, 'CX_14', TIME_NOW))
+    FULL_LOG_DIR = os.path.join(LOG_DIR, 'CX_14', TIME_NOW)
+    FULL_WEIGHT_DIR = os.path.join(WEIGHT_DIR, TIME_NOW)
+
+    if not os.path.exists(FULL_LOG_DIR):
+        os.mkdir(FULL_LOG_DIR)
+        
+    if not os.path.exists(FULL_WEIGHT_DIR):
+        os.mkdir(FULL_WEIGHT_DIR)
+
+    writer = SummaryWriter(log_dir=FULL_LOG_DIR)
 
     for epoch in range(30):  # loop over the dataset multiple times
         print("Epoch:",epoch)
