@@ -133,7 +133,7 @@ if __name__ == '__main__':
 
         # ======== validation ======== 
         # switch to evaluate mode
-        writer.add_scalar('train_loss', running_loss/len(train_loader.dataset), epoch)
+        writer.add_scalar('train_loss', running_loss / idx, epoch)
         net.eval()
 
         # initialize the ground truth and output tensor
