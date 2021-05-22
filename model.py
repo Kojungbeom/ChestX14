@@ -3,17 +3,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
 
-
 class TransitionBlock(nn.Module):
     def __init__(self, in_channels=2048, out_channels=2048):
         super(TransitionBlock,self).__init__()
         self.conv1 = nn.Conv2d(in_channels,
                                out_channels,
-                               kernel_size=1,
+                               kernel_size=3,
                                stride=1,
-                               padding=0,
+                               padding=1,
                                bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.bn1 = nn.BatchNorm2d(in_channels)
         self.relu = nn.ReLU(inplace=True)
         #self.avg_pool = nn.AvgPool2d(2)
         
@@ -21,7 +20,6 @@ class TransitionBlock(nn.Module):
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.relu(out)
-        #out = self.avg_pool(out)
         return out
     
 class LogSumExpPool(nn.Module):
@@ -31,6 +29,12 @@ class LogSumExpPool(nn.Module):
         self.gamma = gamma
 
     def forward(self, feat_map):
+        """
+        Numerically stable implementation of the operation
+        Arguments:
+            feat_map(Tensor): tensor with shape (N, C, H, W)
+            return(Tensor): tensor with shape (N, C, 1, 1)
+        """
         (N, C, H, W) = feat_map.shape
 
         # (N, C, 1, 1) m
@@ -42,6 +46,7 @@ class LogSumExpPool(nn.Module):
         area = 1.0 / (H * W)
         g = self.gamma
 
+        # TODO: split dim=(-1, -2) for onnx.export
         return m + 1 / g * torch.log(area * torch.sum(
             torch.exp(g * value0), dim=(-1, -2), keepdim=True))
     
@@ -49,18 +54,16 @@ class LogSumExpPool(nn.Module):
 class CX_14(nn.Module):
     def __init__(self):
         super(CX_14, self).__init__()
-        r50 = models.resnet50(pretrained=True)
-        for param in r50.parameters():
-            param.requires_grad = False
-        self.layer0 = nn.Sequential(r50.conv1, r50.bn1, r50.relu, r50.maxpool)
-        self.layer1 = r50.layer1
-        self.layer2 = r50.layer2
-        self.layer3 = r50.layer3
-        self.layer4 = r50.layer4
-
+        self.r50 = models.resnet50(pretrained=True)
+        self.layer0 = nn.Sequential(self.r50.conv1, self.r50.bn1, self.r50.relu, self.r50.maxpool)
+        self.layer1 = self.r50.layer1
+        self.layer2 = self.r50.layer2
+        self.layer3 = self.r50.layer3
+        self.layer4 = self.r50.layer4
+        
         self.transition_layer = TransitionBlock()
         self.lsepool = LogSumExpPool(gamma=10)
-        self.fcl = nn.Linear(2048, 8)
+        self.fcl = nn.Linear(2048, 14)
         
     def forward(self, x):
         out = self.layer0(x)
@@ -73,5 +76,3 @@ class CX_14(nn.Module):
         out = out.view(out.size(0), -1)
         out = self.fcl(out)
         return out
-
-

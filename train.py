@@ -2,8 +2,10 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from sklearn.metrics import roc_auc_score
 from tensorboardX import SummaryWriter
+from torchsummary import summary
+
 from dataset import CXR8_train, CXR8_validation
-from model import CX_14
+from model import CX_14, CheXNet
 
 import torch
 import torch.nn.functional as F
@@ -12,161 +14,145 @@ import numpy as np
 import time
 import os
 
-
+def w_cel(outputs, targets):
+    sig_output = torch.sigmoid(outputs)
+    pos = 0
+    neg = 0
+    for target in targets:
+        for v in target:
+            if int(v) == 1:
+                pos += 1
+            else:
+                neg += 1
+    if pos != 0 and neg != 0:
+        B_p = (pos + neg) / pos
+        B_n = (pos + neg) / neg
+        weights = torch.tensor([B_p, B_n], dtype=torch.float).cuda()
+    else:
+        weights = None
+    #loss = -targets * torch.log(sig_output) - (1 - targets) * torch.log(1-sig_output)
     
-net = ResModel()
-net.cuda()
-num_epochs = 200
-gamma = 10
-learning_rate = 1e-5
-optimizer = optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9, weight_decay=5e-4)
-loss_function = nn.BCEWithLogitsLoss()
-
-best_auc_ave = 0.0
-since = time.time()
-best_model_wts = net.state_dict()
-best_auc = []
-iter_num = 0
-model_save_dir = './savedModels'
-data_root_dir = './dataset'
-class_names = train_loader.dataset.classes
-log_dir = './runs'
-model_name = 'myNet'
-
-writer = SummaryWriter(log_dir=os.path.join(log_dir, model_name),comment=model_name)
-input_tensor = torch.Tensor(1, 3, 512, 512).cuda()
-writer.add_graph(net, input_tensor)
-
-for epoch in range(num_epochs):
-    running_loss = 0.0
-    train_auc = 0.0
-    output_list = []
-    label_list = []
-    loss_list = []
-    loss_all = 0.0
-    net.train()
-    # Iterate over data.
+    if weights is not None:
+        loss = -weights[0] * targets * torch.log(sig_output) - weights[1] * (1 - targets) * torch.log(1 - sig_output)
+    else:
+        loss = -targets * torch.log(sig_output) - (1 - targets) * torch.log(1-sig_output)
     
-    for idx, data in enumerate(train_loader):
-        # get the inputs
-        images, labels = data
+    return loss.mean()
 
-        images = images.cuda()
-        labels = labels.cuda()
-        
-        #calculate weight for loss
-        P = 0
-        N = 0
-        for label in labels:
-            for v in label:
-                if int(v) == 1: P += 1
-                else: N += 1
-        if P!=0 and N!=0:
-            BP = (P + N)/P
-            BN = (P + N)/N
-            weights = torch.tensor([BP, BN], dtype=torch.float).cuda()
-        #loss_function = nn.CrossEntropyLoss(weights)
-        
-        optimizer.zero_grad()
-        outputs = net(images)
+def compute_AUCs(gt, pred):
+    AUROCs = []
+    gt_np = gt.cpu().numpy()
+    pred_np = pred.cpu().numpy()
+    for i in range(N_CLASSES):
+        AUROCs.append(roc_auc_score(gt_np[:, i], pred_np[:, i]))
+    return AUROCs
 
-        labels = labels.type_as(outputs)
-        loss = loss_function(outputs, labels)
-        #print(loss.item())
-        loss_all += loss.item()
-        #print(loss_all)
-        loss.backward()
-        optimizer.step()
-        iter_num += 1
-        
-        outputs = outputs.detach().to('cpu').numpy()
-        labels = labels.detach().to('cpu').numpy()
-        for i in range(outputs.shape[0]):
-            output_list.append(outputs[i].tolist())
-            label_list.append(labels[i].tolist())
-        
-        if idx % 10 == 0:
-            print("epoch {epoch}, [{trained_samples}/{total_samples}], loss: {:.4f}".format(
-                loss.item(),
-                epoch=epoch,
-                trained_samples=idx * batch_size + len(images),
-                total_samples=len(train_loader.dataset)))
-            
-    writer.add_scalar('train_loss', loss_all/len(train_loader.dataset)*16, epoch)
-    try:
-        epoch_auc_ave = roc_auc_score(np.array(label_list), np.array(output_list))
-        epoch_auc = roc_auc_score(np.array(label_list), np.array(output_list), average=None)
-    except:
-        epoch_auc_ave = 0
-        epoch_auc = [0 for _ in range(len(class_names))]
-        
-    writer.add_scalar('train_auc', epoch_auc_ave, epoch)
-    log_str = ''
-    for i, c in enumerate(class_names):
-        log_str += '{}: {:.4f}  \n'.format(c, epoch_auc[i])
-        writer.add_scalar(c + "_train", epoch_auc[i], epoch)
-    log_str += '\n'
-    print(log_str)
-                 
-    net.eval()
-    val_auc = 0.0
-    val_loss = 0.0
-    output_list = []
-    label_list = []
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-net', type=str, required=True, help='net type')
+    parser.add_argument('-b', type=int, default=128, help='batch size for dataloader')
+    args = parser.parse_args()
+
+    net = get_network(args)
+    if args.net == 'CX_14':
+        net = CX_14()
+    else:
+        net = CheXNet()
+    net.cuda()
+    summary(net, (3,256,256))
+
+    N_CLASSES = 14
+    CLASS_NAMES = [ 'Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass', 'Nodule', 'Pneumonia',
+                    'Pneumothorax', 'Consolidation', 'Edema', 'Emphysema', 'Fibrosis', 'Pleural_Thickening', 'Hernia']
+
+    DATA_DIR = './dataset/'
+    BATCH_SIZE = 128
+    V_BATCH_SIZE = 32
+
+    train_dataset = CXR8_train(
+        root_dir=DATA_DIR,
+        transform=transforms.Compose([
+            transforms.Resize(284),
+            transforms.CenterCrop(256),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
+        ]))
+    train_loader = DataLoader(dataset=train_dataset, batch_size=BATCH_SIZE, shuffle=False)
+
+    valid_dataset = CXR8_validation(
+        root_dir=DATA_DIR,
+        transform=transforms.Compose([
+            transforms.Resize(284),
+            transforms.CenterCrop(256),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
+        ]))
+    valid_loader = DataLoader(dataset=valid_dataset, batch_size=V_BATCH_SIZE, shuffle=False)
+
+    learning_rate = 2e-4
+    optimizer = optim.SGD(model.parameters(), lr=learning_rate)
+
+    #time of we run the script
+    DATE_FORMAT = '%A_%d_%B_%Y_%Hh_%Mm_%Ss'
+    TIME_NOW = datetime.now().strftime(DATE_FORMAT)
+    LOG_DIR = 'runs'
+    WEIGHT_DIR = 'checkpoint'
+    writer = SummaryWriter(log_dir=os.path.join(
+        LOG_DIR, 'CX_14', TIME_NOW))
+
+    for epoch in range(30):  # loop over the dataset multiple times
+        print("Epoch:",epoch)
+        running_loss = 0.0
+        itera = 0
+        for idx, (x, y) in enumerate(train_loader):
+            x = x.cuda()
+            y = y.cuda()
+            optimizer.zero_grad()
+            outputs = net(x)
+            loss = w_cel(outputs, y)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+            itera += 1
+            if idx % 10 == 0:
+                print("epoch {epoch}, [{trained_samples}/{total_samples}]".format(
+                    loss.item(),
+                    epoch=epoch,
+                    trained_samples= idx * BATCH_SIZE + len(x),
+                    total_samples=len(train_loader.dataset)))
+
+        # ======== validation ======== 
+        # switch to evaluate mode
+        writer.add_scalar('train_loss', running_loss/len(train_loader.dataset), epoch)
+        net.eval()
+
+        # initialize the ground truth and output tensor
+        gt = torch.FloatTensor()
+        gt = gt.cuda()
+        pred = torch.FloatTensor()
+        pred = pred.cuda()
+
+        for idx, (v_x, v_y) in enumerate(valid_loader):
+            v_x = v_x.cuda()
+            v_y = v_y.cuda()
+            gt = torch.cat((gt, v_y), 0)
+            output = net(v_x)
+            pred = torch.cat((pred, output.data), 0)
     
-    for idx, data in enumerate(val_loader):
-        # get the inputs
-        images, labels = data
+        AUROCs = compute_AUCs(gt, pred)
+        AUROC_avg = np.array(AUROCs).mean()
+        print('The average AUROC is {AUROC_avg:.3f}'.format(AUROC_avg=AUROC_avg))
+        for i in range(N_CLASSES):
+            print('The AUROC of {} is {}'.format(CLASS_NAMES[i], AUROCs[i]))
+            writer.add_scalar(CLASS_NAMES[i] + "_val", AUROCs[i], epoch)
         
-        images = images.cuda()
-        labels = labels.cuda()
-        outputs = net(images)
-        
-        labels = labels.type_as(outputs)
-        with torch.no_grad():
-            loss = loss_function(outputs, labels)
-        val_loss += loss
-        outputs = outputs.detach().to('cpu').numpy()
-        labels = labels.detach().to('cpu').numpy()
-        for i in range(outputs.shape[0]):
-            output_list.append(outputs[i].tolist())
-            label_list.append(labels[i].tolist())
-        
-    try:
-        epoch_auc_ave = roc_auc_score(np.array(label_list), np.array(output_list))
-        epoch_auc = roc_auc_score(np.array(label_list), np.array(output_list), average=None)
-        print(epoch_auc)
-    except:
-        epoch_auc_ave = 0
-        epoch_auc = [0 for _ in range(len(class_names))]
-                  
-    log_str = ''
-    for i, c in enumerate(class_names):
-        log_str += '{}: {:.4f}  \n'.format(c, epoch_auc[i])
-        writer.add_scalar(c + "_val", epoch_auc[i], epoch)
-    log_str += '\n'
-    print(log_str)
-    writer.add_text('log', log_str, epoch)
-            
-    print("epoch {}, Val loss: {:.4f}, Val AUC {:.4f}".format(epoch,
-                                                         val_loss.item() / len(val_loader.dataset),
-                                                         val_auc / len(val_loader.dataset)))
-    writer.add_scalar('val_loss', val_loss / len(val_loader.dataset), epoch)
-    writer.add_scalar('val_auc', epoch_auc_ave, epoch)
-    
-    if epoch_auc_ave > best_auc_ave:
-        best_auc = epoch_auc
-        best_auc_ave = epoch_auc_ave
-        best_model_wts = net.state_dict()
-        model_dir = os.path.join(model_save_dir, str(epoch) + model_name + 'best' +'.pth')
-        if not os.path.exists(model_save_dir):
-            os.makedirs(model_save_dir)
-        torch.save(net.state_dict(), model_dir)
-        print('Model saved to %s'%(model_dir))
-        
-    if epoch % 9 == 0:
-        model_dir = os.path.join(model_save_dir, str(epoch) + model_name + 'regular' +'.pth')
-        if not os.path.exists(model_save_dir):
-            os.makedirs(model_save_dir)
-        torch.save(net.state_dict(), model_dir)
-        print('Model saved to %s'%(model_dir))
+        net.train()
+        # print statistics
+        print('[%d] loss: %.3f' % (epoch + 1, running_loss / itera ))
+        torch.save(net.state_dict(),
+                   os.path.join(WEIGHT_DIR, TIME_NOW, 'Cx14_'+str(epoch + 1)+'_'+str(AUROC_avg)+'.pth'))
+               
+    print('Finished Training')
+
